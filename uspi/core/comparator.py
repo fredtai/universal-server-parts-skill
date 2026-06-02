@@ -117,9 +117,13 @@ class Comparator:
         else:
             headers = ["Part Number", "Manufacturer", "Category", "USD Price", "Spec Summary", "Sources", "Confidence"]
 
-        lines: list[str] = []
-        lines.append("| " + " | ".join(headers) + " |")
-        lines.append("|" + "|".join([":---" for _ in headers]) + "|")
+        # 分隔符一次性构建（循环外）/ Build separator once (outside loop)
+        sep: str = "|" + "|".join([":---" for _ in headers]) + "|"
+
+        lines: list[str] = [
+            "| " + " | ".join(headers) + " |",
+            sep,
+        ]
 
         for p in parts:
             price_str: str = f"${p.median_price_usd:.2f}" if p.median_price_usd is not None else "N/A"
@@ -441,24 +445,25 @@ class Comparator:
 
         # 综合评分 / Composite score
         scores: dict[str, float] = {}
+
+        # 预计算循环外不变量 / Pre-compute loop invariants (extracted from inner loop)
+        all_prices: list[float] = [
+            pp.median_price_usd for pp in parts if pp.median_price_usd is not None
+        ]
+        max_price: float = max(all_prices) if all_prices else 0.0
+        min_price: float = min(all_prices) if all_prices else 0.0
+        price_range: float = max_price - min_price if max_price > min_price else 1.0
+        max_sources: int = max(len(pp.sources) for pp in parts) if parts else 0
+
         for p in parts:
             score: float = 0.0
 
             # 价格分（越低越好，反转）/ Price score (lower is better, invert)
-            pm: dict = result.get("price_matrix", {})
-            if p.median_price_usd is not None:
-                prices: list[float] = [
-                    pp.median_price_usd for pp in parts if pp.median_price_usd is not None
-                ]
-                if prices:
-                    max_price: float = max(prices)
-                    min_price: float = min(prices)
-                    price_range: float = max_price - min_price if max_price > min_price else 1.0
-                    price_score: float = (max_price - p.median_price_usd) / price_range
-                    score += price_score * 0.3  # 价格权重 30%
+            if p.median_price_usd is not None and all_prices:
+                price_score: float = (max_price - p.median_price_usd) / price_range
+                score += price_score * 0.3  # 价格权重 30%
 
             # 来源分（越多越好）/ Source score (more is better)
-            max_sources: int = max(len(pp.sources) for pp in parts)
             if max_sources > 0:
                 score += (len(p.sources) / max_sources) * 0.3  # 来源权重 30%
 

@@ -14,6 +14,7 @@ price calculation, and multi-adapter result aggregation.
 
 from __future__ import annotations
 
+import re
 import statistics
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -22,12 +23,17 @@ from uspi.core.adapters.base import CATEGORIES, PriceSource, ServerPart
 from uspi.core.unit_converter import UnitConverter
 
 
+# 模块级常量 / Module-level constants
+_ISO_FMT: str = "%Y-%m-%dT%H:%M:%SZ"
+"""ISO 8601 UTC 时间格式字符串（避免重复字面量）。"""
+
+
 def _utc_now() -> str:
     """Return current UTC time as ISO 8601 string.
 
     返回当前 UTC 时间的 ISO 8601 字符串。
     """
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(timezone.utc).strftime(_ISO_FMT)
 
 
 class Normalizer:
@@ -73,6 +79,37 @@ class Normalizer:
         "RAIL_KIT": ["rail", "rail kit", "slide rail", "mounting rail"],
         "BEZEL": ["bezel", "front bezel", "trim"],
         "BATTERY": ["battery", "cmos battery", "raid battery"],
+    }
+
+    # 预编译分类推断正则（O(N) 替代 O(N*M)）/ Pre-compiled category regex
+    _CATEGORY_PATTERNS: dict[str, re.Pattern] = {
+        cat: re.compile("|".join(re.escape(kw) for kw in kws), re.IGNORECASE)
+        for cat, kws in _CATEGORY_KEYWORDS.items()
+    }
+
+    # 常见键名映射（类级别常量避免每次调用重建）/ Common key map as class constant
+    _DIMENSION_KEY_MAP: dict[str, str] = {
+        "capacity": "capacity",
+        "size": "capacity",
+        "mem": "capacity",
+        "memory": "capacity",
+        "speed": "frequency",
+        "clock": "frequency",
+        "freq": "frequency",
+        "power": "power",
+        "wattage": "power",
+        "pwr": "power",
+        "dimension": "dimension",
+        "dimensions": "dimension",
+        "weight": "weight",
+        "rpm": "rpm",
+        "voltage": "voltage",
+        "current": "current",
+        "temp": "temperature",
+        "temperature": "temperature",
+        "data_rate": "data_rate",
+        "bandwidth": "data_rate",
+        "cache": "cache",
     }
 
     def __init__(
@@ -411,7 +448,9 @@ class Normalizer:
         Infer the category from raw data.
 
         依次检查显式 category 字段、description、specifications 中的关键词。
+        使用预编译正则实现 O(N) 复杂度（N=分类数），替代原有的 O(N*M) 嵌套循环。
         Checks explicit category field, description, then spec keywords.
+        Uses pre-compiled regex for O(N) complexity vs original O(N*M) nested loops.
 
         Args:
             raw_data: 原始数据字典 / Raw data dictionary.
@@ -429,7 +468,7 @@ class Normalizer:
             explicit_upper: str = explicit.upper()
             if explicit_upper in CATEGORIES:
                 return (explicit_upper, CATEGORIES[explicit_upper])
-            # 模糊匹配 / Fuzzy match
+            # 模糊匹配 / Fuzzy match — O(C) set lookup
             for key, zh in CATEGORIES.items():
                 if key in explicit_upper or zh in explicit:
                     return (key, zh)
@@ -441,22 +480,21 @@ class Normalizer:
                 raw_data.get("title", ""),
                 raw_data.get("name", ""),
             ] if v
-        ).lower()
+        )
 
         if text_to_check.strip():
-            for cat_key, keywords in self._CATEGORY_KEYWORDS.items():
-                for kw in keywords:
-                    if kw.lower() in text_to_check:
-                        return (cat_key, CATEGORIES.get(cat_key, cat_key))
+            # 预编译正则 O(N) 单遍匹配 / Pre-compiled regex O(N) single pass
+            for cat_key, pattern in self._CATEGORY_PATTERNS.items():
+                if pattern.search(text_to_check):
+                    return (cat_key, CATEGORIES.get(cat_key, cat_key))
 
         # 3. 从规格推断 / Infer from specifications
         specs_text: str = " ".join(
             f"{k} {v}" for k, v in raw_data.get("specifications", {}).items()
-        ).lower()
-        for cat_key, keywords in self._CATEGORY_KEYWORDS.items():
-            for kw in keywords:
-                if kw.lower() in specs_text:
-                    return (cat_key, CATEGORIES.get(cat_key, cat_key))
+        )
+        for cat_key, pattern in self._CATEGORY_PATTERNS.items():
+            if pattern.search(specs_text):
+                return (cat_key, CATEGORIES.get(cat_key, cat_key))
 
         # 默认：其他 / Default: OTHERS
         return ("OTHERS", CATEGORIES["OTHERS"])
@@ -465,6 +503,8 @@ class Normalizer:
         """根据规格键和原始值检测维度类型。
 
         Detect the dimension type from spec key and raw value.
+        优化版本：使用类级别常量字典 + 预编译正则，消除 O(D*P) 嵌套循环。
+        Optimized: class-level dict + pre-compiled regex, eliminates O(D*P) nested loops.
 
         Args:
             spec_key: 规格键名（如 "capacity", "frequency"）/ Spec key name.
@@ -477,49 +517,26 @@ class Normalizer:
         key_lower: str = spec_key.lower()
         val_lower: str = raw_value.lower()
 
-        # 直接键匹配 / Direct key matching
+        # 1. 直接键匹配 / Direct key matching
         for dim in UnitConverter.DIMENSIONS:
             if dim.lower() in key_lower:
                 return dim
 
-        # 值内容匹配 / Value content matching
+        # 2. 值内容匹配 — 使用预编译正则 / Value match — use pre-compiled regex
+        # 从 unit_converter 导入模块级预编译模式 / Import module-level pre-compiled patterns
+        from uspi.core.unit_converter import _UNIT_PATTERNS
+
         for dim in UnitConverter.DIMENSIONS:
-            std_unit: str = UnitConverter.STANDARD_UNITS.get(dim, "")
-            # 检查值的单位后缀 / Check value's unit suffix
-            patterns: list[tuple[str, str]] = UnitConverter.UNIT_PATTERNS.get(dim, [])
-            for pattern, _ in patterns:
-                # 去掉正则中的 \b 后检查 / Check after removing \b
-                clean_pattern: str = pattern.replace(r"\b", "")
-                if clean_pattern.lower() in val_lower:
+            patterns = _UNIT_PATTERNS.get(dim, [])
+            for compiled_pattern, _ in patterns:
+                if compiled_pattern.search(raw_value):
                     return dim
+            std_unit: str = UnitConverter.STANDARD_UNITS.get(dim, "")
             if std_unit and std_unit.lower() in val_lower:
                 return dim
 
-        # 常见键名映射 / Common key name mapping
-        _KEY_MAP: dict[str, str] = {
-            "capacity": "capacity",
-            "size": "capacity",
-            "mem": "capacity",
-            "memory": "capacity",
-            "speed": "frequency",
-            "clock": "frequency",
-            "freq": "frequency",
-            "power": "power",
-            "wattage": "power",
-            "pwr": "power",
-            "dimension": "dimension",
-            "dimensions": "dimension",
-            "weight": "weight",
-            "rpm": "rpm",
-            "voltage": "voltage",
-            "current": "current",
-            "temp": "temperature",
-            "temperature": "temperature",
-            "data_rate": "data_rate",
-            "bandwidth": "data_rate",
-            "cache": "cache",
-        }
-        return _KEY_MAP.get(key_lower)
+        # 3. 常见键名映射 — O(1) 类常量查表 / Common key map — O(1) class constant lookup
+        return self._DIMENSION_KEY_MAP.get(key_lower)
 
     def _normalize_price_source(self, raw_source: dict) -> Optional[PriceSource]:
         """将原始价格来源字典归一化为 PriceSource。

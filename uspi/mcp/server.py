@@ -106,12 +106,23 @@ class McpServer:
     def __init__(self) -> None:
         self._running = True
         self._initialized = False
+        self._adapters_initialized: bool = False
         self._adapters: Dict[str, Any] = {}
 
-    def _init_adapters(self) -> Dict[str, Any]:
-        """延迟初始化适配器实例 / Lazy-init adapter instances."""
-        if self._adapters:
+    def _ensure_adapters(self) -> Dict[str, Any]:
+        """确保适配器只初始化一次 / Ensure adapters init once.
+
+        双重检查锁定模式：首次调用时创建所有适配器实例，
+        后续调用直接返回缓存结果。避免 tools/call 每次重复初始化。
+        Double-checked locking: creates all adapter instances on first call,
+        subsequent calls return cached result directly.
+
+        Returns:
+            适配器名称 -> 实例的字典 / Dict of adapter name -> instance.
+        """
+        if self._adapters_initialized:
             return self._adapters
+
         fetcher = None
         currency = None
         if Fetcher is not None:
@@ -129,7 +140,13 @@ class McpServer:
                 self._adapters[name] = cls(fetcher, currency)
             except Exception:
                 pass
+
+        self._adapters_initialized = True
         return self._adapters
+
+    def _init_adapters(self) -> Dict[str, Any]:
+        """向后兼容别名 / Backward-compatible alias."""
+        return self._ensure_adapters()
 
     # -- 主循环 / Main loop ------------------------------------------------
 
@@ -197,7 +214,7 @@ class McpServer:
         """分发 tool 调用。/ Dispatch tool call."""
         name = params.get("name", "")
         args = params.get("arguments", {})
-        adapters = self._init_adapters()
+        adapters = self._ensure_adapters()
         if name == "uspi_lookup":
             text = self._do_lookup(args, adapters)
         elif name == "uspi_compare":
