@@ -1,0 +1,63 @@
+{
+  "name": "universal-server-parts-skill",
+  "version": "0.1.0",
+  "description": "Universal Server Parts Intelligence (USPI) - Query server part specs and USD pricing across OEM/ODM vendors with OCR input and Excel export support.",
+  "description_zh": "通用服务器零件智能查询系统（USPI）- 跨 OEM/ODM 厂商查询服务器零件规格与美元价格，支持 OCR 输入和 Excel 导出。",
+  "author": "USPI Team",
+  "license": "MIT",
+  "python": ">=3.10",
+  "dependencies": [],
+  "entry_points": {
+    "mcp": "uspi.mcp.server:main",
+    "http": "uspi.api.http_server:main"
+  },
+  "mcp_tools": [
+    {
+      "name": "uspi_lookup",
+      "description": "Query server part specs and USD pricing across OEM/ODM vendors.",
+      "description_zh": "查询服务器零件规格与美元价格，支持OEM/ODM厂商。"
+    },
+    {
+      "name": "uspi_compare",
+      "description": "Compare multiple server parts side by side.",
+      "description_zh": "并排对比多个服务器零件。"
+    },
+    {
+      "name": "uspi_export",
+      "description": "Export part data to Excel-pasteable markdown or CSV.",
+      "description_zh": "导出零件数据为可粘贴Excel的Markdown或CSV。"
+    }
+  ],
+  "features": [
+    "zero_dependencies",
+    "usd_unified_pricing",
+    "si_standard_units",
+    "bilingual_en_zh",
+    "ocr_input_support",
+    "excel_compatible_export",
+    "token_efficient_output",
+    "15_adapters"
+  ],
+  "categories": [
+    "hardware",
+    "server",
+    "parts",
+    "pricing",
+    "oem",
+    "odm"
+  ],
+  "supported_oem": ["DELL", "HP", "HPE", "LENOVO", "SUPERMICRO"],
+  "supported_odm": ["FOXCONN", "QUANTA", "WISTRON", "COMPAL", "PEGATRON", "INVENTEC", "FLEX", "JABIL"],
+  "supported_market": ["eBay", "Amazon", "AliExpress"],
+  "output_formats": ["compact", "md", "csv", "json"],
+  "unit_dimensions": ["capacity", "frequency", "power", "dimension", "weight", "rpm", "voltage", "current", "temperature", "data_rate", "cache"],
+  "repository": "https://github.com/example/uspi",
+  "documentation": {
+    "readme_zh": "docs/README.zh.md",
+    "readme_en": "docs/README.en.md",
+    "api_spec_zh": "docs/API_SPEC.zh.md",
+    "api_spec_en": "docs/API_SPEC.en.md",
+    "dialogue_examples": "docs/DIALOGUE_EXAMPLES.md",
+    "units": "docs/UNITS.md"
+  }
+}
