@@ -13,9 +13,16 @@ from __future__ import annotations
 from uspi.utils.i18n import I18nMessage
 from uspi.utils.cache import Cache
 from uspi.utils.currency import CurrencyConverter
+from uspi.utils.logger import Logger, LogLevel, debug, info, warn, error
 
 __all__ = [
     "I18nMessage",
     "Cache",
     "CurrencyConverter",
+    "Logger",
+    "LogLevel",
+    "debug",
+    "info",
+    "warn",
+    "error",
 ]

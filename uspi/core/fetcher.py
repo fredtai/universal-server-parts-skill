@@ -152,6 +152,24 @@ class Fetcher:
         # 线程锁，保证线程安全 / Threading lock for thread safety
         self._lock = threading.Lock()
 
+    def close(self) -> None:
+        """关闭 fetcher 资源 / Close fetcher resources"""
+        if self._cache:
+            try:
+                self._cache.close()
+            except Exception:
+                pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+        return False
+
+    def __del__(self):
+        self.close()
+
     # -- public API ---------------------------------------------------------
 
     def fetch(

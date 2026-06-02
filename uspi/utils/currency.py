@@ -75,6 +75,26 @@ class CurrencyConverter:
                    如果为 None,则不使用缓存。
         """
         self._cache: Optional[Cache] = cache
+        self._closed: bool = False
+
+    def close(self) -> None:
+        """关闭资源 / Close resources"""
+        self._closed = True
+        if self._cache:
+            try:
+                self._cache.close()
+            except Exception:
+                pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+        return False
+
+    def __del__(self):
+        self.close()
 
     def convert_to_usd(self, amount: float, from_currency: str) -> dict[str, Any]:
         """
