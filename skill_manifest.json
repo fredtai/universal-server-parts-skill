@@ -51,7 +51,7 @@
   "supported_market": ["eBay", "Amazon", "AliExpress"],
   "output_formats": ["compact", "md", "csv", "json"],
   "unit_dimensions": ["capacity", "frequency", "power", "dimension", "weight", "rpm", "voltage", "current", "temperature", "data_rate", "cache"],
-  "repository": "https://github.com/example/uspi",
+  "repository": "https://github.com/fredtai/universal-server-parts-skill",
   "documentation": {
     "readme_zh": "docs/README.zh.md",
     "readme_en": "docs/README.en.md",
