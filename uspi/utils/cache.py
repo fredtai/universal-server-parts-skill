@@ -54,6 +54,7 @@ class Cache:
         """
         self.db_path: str = db_path
         self.default_ttl: int = default_ttl
+        self._closed: bool = False  # 关闭标记 / close flag
         self._conn: sqlite3.Connection = sqlite3.connect(
             db_path,
             check_same_thread=False,
@@ -81,6 +82,20 @@ class Cache:
                 """
             )
 
+    def _ensure_open(self) -> None:
+        """确保连接未关闭 / Ensure connection is open"""
+        if self._closed:
+            raise RuntimeError("Cache connection is closed / 缓存连接已关闭")
+
+    # === 上下文管理器 / Context manager ===
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False  # 不吞异常 / do not swallow exceptions
+
     def get(self, key: str) -> Optional[str]:
         """
         Retrieve a value from the cache.
@@ -97,6 +112,7 @@ class Cache:
             The cached value, or None if not found or expired.
             缓存的值,如果未找到或已过期则返回 None。
         """
+        self._ensure_open()
         now: float = time.time()
         cursor: sqlite3.Cursor = self._conn.execute(
             "SELECT value, expires_at FROM cache WHERE key = ?",
@@ -126,6 +142,7 @@ class Cache:
             ttl: Time-to-live in seconds. If None, uses default_ttl.
                  生存时间,单位为秒。如果为 None,使用 default_ttl。
         """
+        self._ensure_open()
         effective_ttl: int = ttl if ttl is not None else self.default_ttl
         expires_at: float = time.time() + effective_ttl
         with self._conn:
@@ -149,6 +166,7 @@ class Cache:
             key: The cache key to delete.
                  要删除的缓存键。
         """
+        self._ensure_open()
         with self._conn:
             self._conn.execute(
                 "DELETE FROM cache WHERE key = ?",
@@ -164,6 +182,7 @@ class Cache:
         when using a file-based database.
         当使用基于文件的数据库时,应定期调用此方法来回收磁盘空间。
         """
+        self._ensure_open()
         now: float = time.time()
         with self._conn:
             self._conn.execute(
@@ -192,18 +211,15 @@ class Cache:
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def close(self) -> None:
-        """
-        Close the SQLite connection.
-        关闭 SQLite 连接。
-
-        Call this when the cache is no longer needed to release resources.
-        当不再需要缓存时调用此方法以释放资源。
-        """
-        self._conn.close()
+        """安全关闭连接 / Safely close connection"""
+        if not self._closed and self._conn:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._closed = True
+            self._conn = None
 
     def __del__(self) -> None:
-        """Destructor to ensure connection is closed."""
-        try:
-            self._conn.close()
-        except Exception:
-            pass
+        """析构时自动关闭 / Auto-close on destruct"""
+        self.close()
