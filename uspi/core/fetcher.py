@@ -149,8 +149,24 @@ class Fetcher:
         # robots.txt 内存缓存: {netloc -> RobotFileParser} / In-memory robots.txt cache
         self._robots_cache: dict[str, Any] = {}
 
+        # User-Agent 轮换索引 / UA rotation index (轮询替代随机)
+        self._ua_index: int = 0
+
         # 线程锁，保证线程安全 / Threading lock for thread safety
         self._lock = threading.Lock()
+
+    def _get_next_ua(self) -> str:
+        """轮询获取下一个 UA / Rotate to next UA.
+
+        使用原子递增索引实现 O(1) 轮询，替代 random.choice 的 O(N) 开销。
+        Uses atomic-increment index for O(1) rotation vs random.choice O(N).
+
+        Returns:
+            下一个 User-Agent 字符串 / Next User-Agent string.
+        """
+        ua = self.USER_AGENTS[self._ua_index % len(self.USER_AGENTS)]
+        self._ua_index += 1
+        return ua
 
     # -- public API ---------------------------------------------------------
 
@@ -408,7 +424,7 @@ class Fetcher:
             合并后的请求头 / Merged headers dictionary
         """
         headers: Dict[str, str] = {
-            "User-Agent": random.choice(self.USER_AGENTS),
+            "User-Agent": self._get_next_ua(),
             "Accept": (
                 "text/html,application/xhtml+xml,application/xml;"
                 "q=0.9,*/*;q=0.8"

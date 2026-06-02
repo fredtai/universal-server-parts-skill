@@ -210,6 +210,7 @@ class PartParser:
     # ------------------------------------------------------------------
     _compiled_oem: Dict[str, List[re.Pattern]] = {}
     _compiled_odm: Dict[str, List[re.Pattern]] = {}
+    _compiled_categories: Dict[str, List[re.Pattern]] = {}
 
     def __init__(self) -> None:
         """
@@ -223,6 +224,10 @@ class PartParser:
         self._compiled_odm = {
             brand: [re.compile(p, re.IGNORECASE) for p in patterns]
             for brand, patterns in self.ODM_PATTERNS.items()
+        }
+        self._compiled_categories = {
+            cat: [re.compile(r'\b' + re.escape(kw) + r'\b', re.IGNORECASE) for kw in kws]
+            for cat, kws in self.CATEGORY_KEYWORDS.items()
         }
 
     def parse(
@@ -503,6 +508,9 @@ class PartParser:
         根据文本推断分类，返回按置信度排序的分类列表。
         Infer category from text, return sorted list by confidence.
 
+        优化版本：使用预编译正则，O(N) 而非 O(N*M)。
+        Optimized: uses pre-compiled regex, O(N) instead of O(N*M).
+
         置信度计算：匹配关键词数 / 该分类总关键词数。
         Confidence = matched_keywords / total_keywords_for_category.
 
@@ -515,23 +523,20 @@ class PartParser:
         if not text:
             return []
 
-        scores: List[Tuple[str, float]] = []
         text_upper = text.upper()
+        scores: Dict[str, float] = {}
+        category_keywords = self.CATEGORY_KEYWORDS
 
-        for category, keywords in self.CATEGORY_KEYWORDS.items():
-            if not keywords:
-                continue
-            matched = 0
-            for kw in keywords:
-                if kw.upper() in text_upper:
-                    matched += 1
-            if matched > 0:
-                confidence = matched / len(keywords)
-                scores.append((category, confidence))
+        for cat, patterns in self._compiled_categories.items():
+            count = sum(1 for p in patterns if p.search(text_upper))
+            if count > 0:
+                total_kw = len(category_keywords[cat])
+                scores[cat] = min(count / total_kw, 1.0)
 
-        # 按置信度降序排序 / Sort by confidence descending
-        scores.sort(key=lambda x: x[1], reverse=True)
-        return scores
+        if not scores:
+            return []
+
+        return sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
     def suggest_manufacturers(self, part_number: str) -> List[str]:
         """

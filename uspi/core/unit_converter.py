@@ -13,6 +13,145 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+# ------------------------------------------------------------------
+# 模块级转换因子常量 / Module-level conversion factor constants
+# 避免每次方法调用时重新创建字典 / Avoid recreating dicts on each method call
+# ------------------------------------------------------------------
+_CONVERSION_FACTORS: dict[str, dict[str, float]] = {
+    "capacity": {
+        "MB": 0.001,
+        "GB": 1.0,
+        "TB": 1000.0,
+        "MiB": 1.0 / 953.67431640625,   # ≈ 0.001048576
+        "GiB": 1.073741824,
+        "TiB": 1099.511627776,
+    },
+    "frequency": {
+        "Hz": 1e-9,
+        "KHz": 1e-6,
+        "MHz": 0.001,
+        "GHz": 1.0,
+    },
+    "power": {
+        "mW": 0.001,
+        "W": 1.0,
+        "kW": 1000.0,
+        "BTU/hr": 0.293071,
+        "BTU/h": 0.293071,
+    },
+    "dimension": {
+        "mm": 1.0,
+        "cm": 10.0,
+        "m": 1000.0,
+        "inch": 25.4,
+        "in": 25.4,
+        "\"": 25.4,
+    },
+    "weight": {
+        "g": 0.001,
+        "kg": 1.0,
+        "lb": 0.453592,
+        "oz": 0.0283495,
+    },
+    "rpm": {
+        "RPM": 1.0,
+        "r/min": 1.0,
+    },
+    "voltage": {
+        "mV": 0.001,
+        "V": 1.0,
+        "kV": 1000.0,
+    },
+    "current": {
+        "mA": 0.001,
+        "A": 1.0,
+    },
+    "temperature": {
+        "°C": 1.0,
+        "°F": "special_fahrenheit",
+        "K": "special_kelvin",
+    },
+    "data_rate": {
+        "KB/s": 0.000008,
+        "MB/s": 0.008,
+        "Mbps": 0.001,
+        "Gbps": 1.0,
+    },
+    "cache": {
+        "MB": 1.0,
+        "GB": 1000.0,
+    },
+}
+
+# 模块级单位正则缓存 / Module-level compiled unit regex cache
+_UNIT_PATTERNS: dict[str, list[tuple[re.Pattern, str]]] = {
+    "capacity": [
+        (re.compile(r"TiB\b"), "TiB"),
+        (re.compile(r"GiB\b"), "GiB"),
+        (re.compile(r"MiB\b"), "MiB"),
+        (re.compile(r"TB\b"), "TB"),
+        (re.compile(r"GB\b"), "GB"),
+        (re.compile(r"MB\b"), "MB"),
+    ],
+    "frequency": [
+        (re.compile(r"GHz\b"), "GHz"),
+        (re.compile(r"MHz\b"), "MHz"),
+        (re.compile(r"KHz\b"), "KHz"),
+        (re.compile(r"Hz\b"), "Hz"),
+    ],
+    "power": [
+        (re.compile(r"kW\b"), "kW"),
+        (re.compile(r"mW\b"), "mW"),
+        (re.compile(r"BTU/hr\b"), "BTU/hr"),
+        (re.compile(r"BTU/h\b"), "BTU/h"),
+        (re.compile(r"W\b"), "W"),
+    ],
+    "dimension": [
+        (re.compile(r"inch\b"), "inch"),
+        (re.compile(r"in\b"), "in"),
+        (re.compile(r'"'), '"'),
+        (re.compile(r"cm\b"), "cm"),
+        (re.compile(r"mm\b"), "mm"),
+        (re.compile(r"m\b"), "m"),
+    ],
+    "weight": [
+        (re.compile(r"kg\b"), "kg"),
+        (re.compile(r"lb\b"), "lb"),
+        (re.compile(r"oz\b"), "oz"),
+        (re.compile(r"g\b"), "g"),
+    ],
+    "rpm": [
+        (re.compile(r"RPM\b"), "RPM"),
+        (re.compile(r"r/min\b"), "r/min"),
+    ],
+    "voltage": [
+        (re.compile(r"kV\b"), "kV"),
+        (re.compile(r"mV\b"), "mV"),
+        (re.compile(r"V\b"), "V"),
+    ],
+    "current": [
+        (re.compile(r"mA\b"), "mA"),
+        (re.compile(r"A\b"), "A"),
+    ],
+    "temperature": [
+        (re.compile(r"°F\b"), "°F"),
+        (re.compile(r"℉\b"), "°F"),
+        (re.compile(r"°C\b"), "°C"),
+        (re.compile(r"℃\b"), "°C"),
+        (re.compile(r"K\b"), "K"),
+    ],
+    "data_rate": [
+        (re.compile(r"Gbps\b"), "Gbps"),
+        (re.compile(r"Mbps\b"), "Mbps"),
+        (re.compile(r"MB/s\b"), "MB/s"),
+        (re.compile(r"KB/s\b"), "KB/s"),
+    ],
+    "cache": [
+        (re.compile(r"GB\b"), "GB"),
+        (re.compile(r"MB\b"), "MB"),
+    ],
+}
+
 
 class UnitConverter:
     """Unit standardization engine for server hardware specifications.
@@ -61,145 +200,17 @@ class UnitConverter:
 
     # ------------------------------------------------------------------
     # 转换因子 / Conversion factors
-    # 格式: {dimension: {unit_symbol: factor_to_standard_unit}}
+    # 引用模块级常量以节省内存 / Reference module-level constants to save memory
     # ------------------------------------------------------------------
-    CONVERSION_FACTORS: dict[str, dict[str, float]] = {
-        "capacity": {
-            "MB": 0.001,
-            "GB": 1.0,
-            "TB": 1000.0,
-            "MiB": 1.0 / 953.67431640625,   # ≈ 0.001048576
-            "GiB": 1.073741824,
-            "TiB": 1099.511627776,
-        },
-        "frequency": {
-            "Hz": 1e-9,
-            "KHz": 1e-6,
-            "MHz": 0.001,
-            "GHz": 1.0,
-        },
-        "power": {
-            "mW": 0.001,
-            "W": 1.0,
-            "kW": 1000.0,
-            "BTU/hr": 0.293071,
-            "BTU/h": 0.293071,
-        },
-        "dimension": {
-            "mm": 1.0,
-            "cm": 10.0,
-            "m": 1000.0,
-            "inch": 25.4,
-            "in": 25.4,
-            "\"": 25.4,
-        },
-        "weight": {
-            "g": 0.001,
-            "kg": 1.0,
-            "lb": 0.453592,
-            "oz": 0.0283495,
-        },
-        "rpm": {
-            "RPM": 1.0,
-            "r/min": 1.0,
-        },
-        "voltage": {
-            "mV": 0.001,
-            "V": 1.0,
-            "kV": 1000.0,
-        },
-        "current": {
-            "mA": 0.001,
-            "A": 1.0,
-        },
-        "temperature": {
-            "°C": 1.0,
-            "°F": "special_fahrenheit",
-            "K": "special_kelvin",
-        },
-        "data_rate": {
-            "KB/s": 0.000008,
-            "MB/s": 0.008,
-            "Mbps": 0.001,
-            "Gbps": 1.0,
-        },
-        "cache": {
-            "MB": 1.0,
-            "GB": 1000.0,
-        },
-    }
+    CONVERSION_FACTORS: dict[str, dict[str, float]] = _CONVERSION_FACTORS
 
     # ------------------------------------------------------------------
     # 单位检测的正则模式 / Regex patterns for unit detection
-    # 格式: {dimension: [(regex_pattern, canonical_unit), ...]}
-    # 顺序很重要 — 先匹配更具体的模式 / Order matters — more specific first.
+    # 引用模块级预编译常量 / Reference module-level pre-compiled constants
     # ------------------------------------------------------------------
     UNIT_PATTERNS: dict[str, list[tuple[str, str]]] = {
-        "capacity": [
-            (r"TiB\b", "TiB"),
-            (r"GiB\b", "GiB"),
-            (r"MiB\b", "MiB"),
-            (r"TB\b", "TB"),
-            (r"GB\b", "GB"),
-            (r"MB\b", "MB"),
-        ],
-        "frequency": [
-            (r"GHz\b", "GHz"),
-            (r"MHz\b", "MHz"),
-            (r"KHz\b", "KHz"),
-            (r"Hz\b", "Hz"),
-        ],
-        "power": [
-            (r"kW\b", "kW"),
-            (r"mW\b", "mW"),
-            (r"BTU/hr\b", "BTU/hr"),
-            (r"BTU/h\b", "BTU/h"),
-            (r"W\b", "W"),
-        ],
-        "dimension": [
-            (r"inch\b", "inch"),
-            (r"in\b", "in"),
-            (r'"', '"'),
-            (r"cm\b", "cm"),
-            (r"mm\b", "mm"),
-            (r"m\b", "m"),
-        ],
-        "weight": [
-            (r"kg\b", "kg"),
-            (r"lb\b", "lb"),
-            (r"oz\b", "oz"),
-            (r"g\b", "g"),
-        ],
-        "rpm": [
-            (r"RPM\b", "RPM"),
-            (r"r/min\b", "r/min"),
-        ],
-        "voltage": [
-            (r"kV\b", "kV"),
-            (r"mV\b", "mV"),
-            (r"V\b", "V"),
-        ],
-        "current": [
-            (r"mA\b", "mA"),
-            (r"A\b", "A"),
-        ],
-        "temperature": [
-            (r"°F\b", "°F"),
-            (r"℉\b", "°F"),
-            (r"°C\b", "°C"),
-            (r"℃\b", "°C"),
-            (r"K\b", "K"),
-        ],
-        "data_rate": [
-            (r"Gbps\b", "Gbps"),
-            (r"Mbps\b", "Mbps"),
-            (r"MB/s\b", "MB/s"),
-            (r"KB/s\b", "KB/s"),
-        ],
-        "cache": [
-            (r"GB\b", "GB"),
-            (r"MB\b", "MB"),
-        ],
+        dim: [(p.pattern, unit) for p, unit in _UNIT_PATTERNS[dim]]
+        for dim in _UNIT_PATTERNS
     }
 
     # ------------------------------------------------------------------
@@ -362,10 +373,8 @@ class UnitConverter:
         """Detect the unit symbol in a raw string for a given dimension.
         检测给定维度下原始字符串中的单位符号。
 
-        Uses dimension-specific regex patterns to identify unit symbols.
-        Matching is case-sensitive to avoid false positives.
-        使用维度特定的正则表达式模式识别单位符号。
-        匹配区分大小写以避免误报。
+        使用模块级预编译正则（零运行时编译开销）。
+        Uses module-level pre-compiled regex (zero runtime compile cost).
 
         Args:
             raw_str: The raw specification string / 原始规格字符串
@@ -375,9 +384,9 @@ class UnitConverter:
             Canonical unit symbol if detected, None otherwise
             如果检测到则返回标准单位符号，否则返回 None
         """
-        patterns = cls.UNIT_PATTERNS.get(dimension, [])
-        for pattern, canonical_unit in patterns:
-            if re.search(pattern, raw_str):
+        patterns = _UNIT_PATTERNS.get(dimension, [])
+        for compiled_pattern, canonical_unit in patterns:
+            if compiled_pattern.search(raw_str):
                 return canonical_unit
         return None
 

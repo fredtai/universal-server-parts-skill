@@ -21,6 +21,60 @@ from typing import Any, Dict, List, Optional
 from uspi.core.adapters.base import ServerPart
 
 # ---------------------------------------------------------------------------
+# 模块级常量 / Module-level constants
+# ---------------------------------------------------------------------------
+
+# ISO 时间格式字符串 / ISO time format string
+_ISO_FMT: str = "%Y-%m-%dT%H:%M:%SZ"
+
+# Markdown 表格分隔符（预构建避免循环内重复创建）
+_MD_SEPARATOR: str = "|:---:"
+
+# 表头映射（模块级常量避免每次调用重建）/ Header maps as module-level constants
+_ZH_HEADERS: dict[str, str] = {
+    "part_number": "零件号",
+    "manufacturer": "厂商",
+    "manufacturer_zh": "厂商(中)",
+    "category": "分类",
+    "category_zh": "分类(中)",
+    "description": "描述",
+    "description_zh": "描述(中)",
+    "specifications": "规格",
+    "raw_specifications": "原始规格",
+    "sources": "货源",
+    "median_price_usd": "美元价",
+    "price_range_usd": "价格区间",
+    "confidence_score": "可信度",
+    "last_updated": "更新时间",
+    "oem_brand": "OEM品牌",
+    "unit_system": "单位体系",
+}
+
+_EN_HEADERS: dict[str, str] = {
+    "part_number": "Part Number",
+    "manufacturer": "Manufacturer",
+    "manufacturer_zh": "Mfr (zh)",
+    "category": "Category",
+    "category_zh": "Category (zh)",
+    "description": "Description",
+    "description_zh": "Desc (zh)",
+    "specifications": "Specifications",
+    "raw_specifications": "Raw Specs",
+    "sources": "Sources",
+    "median_price_usd": "USD Price",
+    "price_range_usd": "Price Range",
+    "confidence_score": "Confidence",
+    "last_updated": "Updated",
+    "oem_brand": "OEM Brand",
+    "unit_system": "Unit System",
+}
+
+# 错误消息常量 / Error message constants
+_ERR_PART_NUMBER_REQUIRED: str = "[Error / 错误] part_number required / 必须提供零件号"
+_ERR_NEED_2_PARTS: str = "[Error / 错误] Need >=2 part numbers / 至少需 2 个零件号"
+_ERR_NOT_FOUND: str = "[Not Found / 未找到]"
+
+# ---------------------------------------------------------------------------
 # 预定义字段子集（Token 优化）/ Predefined field subsets (Token optimization)
 # ---------------------------------------------------------------------------
 
@@ -125,9 +179,13 @@ class Exporter:
         # 确定表头 / Determine headers
         headers: list[str] = Exporter._headers_for_fields(fields, lang)
 
-        lines: list[str] = []
-        lines.append("| " + " | ".join(headers) + " |")
-        lines.append("|" + "|".join([":---" for _ in headers]) + "|")
+        # 分隔符行一次性构建（循环外）/ Build separator once (outside loop)
+        sep: str = "|" + "|".join([":---" for _ in headers]) + "|"
+
+        lines: list[str] = [
+            "| " + " | ".join(headers) + " |",
+            sep,
+        ]
 
         for p in parts:
             row: list[str] = Exporter._row_values(p, fields, lang)
@@ -390,6 +448,7 @@ class Exporter:
         """根据字段列表生成表头。
 
         Generate headers from a field list.
+        使用模块级常量字典（O(1) 查表），避免每次调用重新创建大对象。
 
         Args:
             fields: 字段名列表 / Field name list.
@@ -398,43 +457,6 @@ class Exporter:
         Returns:
             表头字符串列表 / List of header strings.
         """
-        _ZH_HEADERS: dict[str, str] = {
-            "part_number": "零件号",
-            "manufacturer": "厂商",
-            "manufacturer_zh": "厂商(中)",
-            "category": "分类",
-            "category_zh": "分类(中)",
-            "description": "描述",
-            "description_zh": "描述(中)",
-            "specifications": "规格",
-            "raw_specifications": "原始规格",
-            "sources": "货源",
-            "median_price_usd": "美元价",
-            "price_range_usd": "价格区间",
-            "confidence_score": "可信度",
-            "last_updated": "更新时间",
-            "oem_brand": "OEM品牌",
-            "unit_system": "单位体系",
-        }
-        _EN_HEADERS: dict[str, str] = {
-            "part_number": "Part Number",
-            "manufacturer": "Manufacturer",
-            "manufacturer_zh": "Mfr (zh)",
-            "category": "Category",
-            "category_zh": "Category (zh)",
-            "description": "Description",
-            "description_zh": "Desc (zh)",
-            "specifications": "Specifications",
-            "raw_specifications": "Raw Specs",
-            "sources": "Sources",
-            "median_price_usd": "USD Price",
-            "price_range_usd": "Price Range",
-            "confidence_score": "Confidence",
-            "last_updated": "Updated",
-            "oem_brand": "OEM Brand",
-            "unit_system": "Unit System",
-        }
-
         header_map: dict[str, str] = _ZH_HEADERS if lang == "zh" else _EN_HEADERS
         return [header_map.get(f, f) for f in fields]
 
