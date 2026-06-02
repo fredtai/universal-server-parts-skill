@@ -3,63 +3,18 @@ uspi/core/adapters/flex_adapter.py
 
 伟创力 (Flex) ODM 适配器 / Flex ODM Adapter.
 
-伟创力 (Flex Ltd., 原 Flextronics) 是全球领先的从概念到规模生产
-的智能制造厂商，为 CISCO、JUNIPER、NOKIA 等品牌代工网络及服务器设备。
-Flex is a global manufacturing partner for technology companies,
-producing networking and server equipment for CISCO, JUNIPER, NOKIA, and others.
+为 DELL、HP、LENOVO 等品牌代工服务器及零部件。
+Flex produces server parts for DELL, HP, LENOVO, and others.
 """
-
 from __future__ import annotations
 
-import re
-from datetime import datetime, timezone
-from html.parser import HTMLParser
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
-from uspi.core.adapters.base import BaseAdapter, CATEGORIES, PriceSource, ServerPart
-from uspi.core.parser import PartParser
-
-
-# ---------------------------------------------------------------------------
-# HTML 解析辅助 / HTML parsing helpers
-# ---------------------------------------------------------------------------
-
-
-class _FlexSpecParser(HTMLParser):
-    """轻量级 HTML 规格表提取器 / Lightweight HTML spec table extractor."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.in_table = False
-        self.current_tag: Optional[str] = None
-        self.specs: Dict[str, str] = {}
-        self._current_key: Optional[str] = None
-        self._buffer = ""
-
-    def handle_starttag(self, tag: str, attrs: list) -> None:
-        self.current_tag = tag
-        if tag in ("table", "div"):
-            attr_dict = dict(attrs)
-            if "spec" in attr_dict.get("class", "").lower():
-                self.in_table = True
-
-    def handle_data(self, data: str) -> None:
-        if self.in_table and data.strip():
-            self._buffer += data.strip()
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag in ("td", "th", "div") and self._buffer:
-            if self._current_key is None:
-                self._current_key = self._buffer
-            else:
-                self.specs[self._current_key] = self._buffer
-                self._current_key = None
-            self._buffer = ""
-
-
-# ---------------------------------------------------------------------------
-# 适配器主体 / Adapter class
-# ---------------------------------------------------------------------------
+from uspi.core.adapters.base import CATEGORIES, BaseAdapter, PriceSource, ServerPart
+from uspi.core.adapters._common import (
+    extract_specs_from_html, infer_category_from_specs, infer_category_from_text,
+    make_mock_part, utc_now,
+)
 
 
 class FlexAdapter(BaseAdapter):
@@ -68,24 +23,21 @@ class FlexAdapter(BaseAdapter):
     Attributes:
         name: 适配器英文标识 / Adapter English code.
         name_zh: 适配器中文名 / Adapter Chinese name.
-        source_url: Flex 官网 / Flex official website.
-        reliability_score: 数据源可信度 (ODM 公开数据较少) / Data reliability.
+        source_url: 伟创力官网 / Flex official website.
+        reliability_score: 数据源可信度 / Data reliability.
         oem_brands: 可能代工的品牌列表 / Possible OEM brands.
-        part_prefixes: 零件号前缀字典 / Part number prefixes.
+        part_prefixes: 零件号前缀 / Part number prefixes.
     """
 
     name = "flex"
-    name_zh = "伟创力"
+    name_zh = "\u4f1f\u521b\u529b"
     source_url = "https://flex.com"
-    reliability_score = 0.61
-    oem_brands = ["CISCO", "JUNIPER", "NOKIA"]
-    part_prefixes = ["FLE", "FLX"]
+    reliability_score = 0.64
+    oem_brands = ["DELL", "HP", "LENOVO"]
+    part_prefixes = ["FLX", "F"]
 
     def lookup(self, part_number: str) -> Optional[ServerPart]:
         """按零件号查询伟创力零件信息 / Look up a Flex part by part number.
-
-        先检查适配器是否启用，再尝试从官网获取数据；
-        若失败则返回 mock 推断结果，确保 skill 始终可用。
 
         Args:
             part_number: 零件号字符串 / Part number string.
@@ -93,6 +45,8 @@ class FlexAdapter(BaseAdapter):
         Returns:
             ServerPart 实例或 None / ServerPart instance or None.
         """
+        if not part_number or not isinstance(part_number, str):
+            return None
         if not self._is_available():
             return self._fallback_disabled()
 
@@ -100,137 +54,55 @@ class FlexAdapter(BaseAdapter):
             url = f"{self.source_url}/search?q={part_number}"
             html = self._fetch_html(url, timeout=10)
             if html and len(html) > 100:
-                return self._parse_lookup_response(part_number, html)
+                result = self._parse_response(part_number, html)
+                if result:
+                    return result
         except Exception:
             pass
-
         return self._mock_lookup(part_number)
 
-    def _parse_lookup_response(self, part_number: str, html: str) -> Optional[ServerPart]:
-        """解析 Flex 官网 HTML 响应 / Parse Flex official HTML response.
-
-        Args:
-            part_number: 零件号 / Part number.
-            html: HTML 文本 / HTML text content.
-
-        Returns:
-            ServerPart 或 None / ServerPart or None if parsing fails.
-        """
-        parser = _FlexSpecParser()
-        parser.feed(html)
-        if not parser.specs:
+    def _parse_response(self, part_number: str, html: str) -> Optional[ServerPart]:
+        """解析伟创力官网 HTML 响应 / Parse Flex HTML response."""
+        specs = extract_specs_from_html(html)
+        if not specs:
             return None
-
-        category = self._infer_category_from_specs(parser.specs)
+        cat = infer_category_from_specs(specs)
+        now = utc_now()
         return ServerPart(
-            part_number=part_number,
-            manufacturer="FLEX",
-            manufacturer_zh=self.name_zh,
-            oem_brand=self.oem_brands[0],
-            category=category,
-            category_zh=CATEGORIES.get(category, "其他"),
+            part_number=part_number, manufacturer="FLEX", manufacturer_zh=self.name_zh,
+            oem_brand=self.oem_brands[0], category=cat,
+            category_zh=CATEGORIES.get(cat, "\u5176\u4ed6"),
             description=f"Flex ODM part {part_number}",
-            description_zh=f"伟创力 ODM 零件 {part_number}",
-            specifications={},
-            raw_specifications=parser.specs,
-            sources=[
-                PriceSource(
-                    source_name="Flex_Official",
-                    source_name_zh="伟创力官网",
-                    url=self.source_url,
-                    reliability_score=self.reliability_score,
-                )
-            ],
-            confidence_score=0.6,
+            description_zh=f"\u4f1f\u521b\u529b ODM \u96f6\u4ef6 {part_number}",
+            specifications={}, raw_specifications=specs,
+            sources=[PriceSource(
+                source_name="Flex_Official", source_name_zh="\u4f1f\u521b\u529b\u5b98\u7f51",
+                url=self.source_url, last_seen=now, reliability_score=self.reliability_score,
+            )],
+            confidence_score=0.6, last_updated=now,
         )
 
     def search_by_spec(self, **specs: Any) -> List[ServerPart]:
         """按规格参数搜索伟创力零件 / Search Flex parts by specifications.
 
-        ODM 公开规格搜索能力有限，当前返回 mock 示例列表。
-
-        Args:
-            **specs: 规格键值对 / Specification key-value pairs.
-
         Returns:
-            ServerPart 列表 / List of ServerPart instances.
+            \u7a7a\u5217\u8868 / Empty list.
         """
-        if not self._is_available():
-            return []
+        return []
 
-        mock_parts = [
-            self._mock_lookup("FLE12345678"),
-            self._mock_lookup("FLX87654321"),
-        ]
-        return [p for p in mock_parts if p is not None]
-
-    def _mock_lookup(self, part_number: str) -> Optional[ServerPart]:
+    def _mock_lookup(self, part_number: str) -> ServerPart:
         """生成 Mock 查询结果 / Generate mock lookup result.
-
-        使用 PartParser 基于零件号模式推断厂商和分类。
 
         Args:
             part_number: 零件号 / Part number.
 
         Returns:
-            ServerPart 实例（mock） / Mock ServerPart instance.
+            Mock ServerPart instance.
         """
-        parser = PartParser()
-        parsed = parser.parse(part_number)
-
-        category = parsed.category if parsed.category else "OTHERS"
-        category_zh = parsed.category_zh if parsed.category_zh else "其他"
-        oem_brand = parsed.oem_brand if parsed.oem_brand else self.oem_brands[0]
-
-        return ServerPart(
-            part_number=part_number,
-            manufacturer="FLEX",
-            manufacturer_zh=self.name_zh,
-            oem_brand=oem_brand,
-            category=category,
-            category_zh=category_zh,
-            description="Flex ODM part (inferred from pattern)",
-            description_zh="ODM 零件（公开数据有限，基于零件号模式推断）",
-            specifications={},
-            raw_specifications={},
-            sources=[
-                PriceSource(
-                    source_name="ODM_Mock",
-                    source_name_zh="ODM推断数据源",
-                    url=None,
-                    reliability_score=0.3,
-                )
-            ],
-            median_price_usd=None,
-            price_range_usd=None,
-            confidence_score=0.3,
+        cat, cat_zh, _ = infer_category_from_text(part_number)
+        return make_mock_part(
+            part_number=part_number, manufacturer="FLEX", manufacturer_zh=self.name_zh,
+            category=cat, category_zh=cat_zh, oem_brand=self.oem_brands[0],
+            description=f"Flex ODM part {part_number}",
+            description_zh=f"\u4f1f\u521b\u529b ODM \u96f6\u4ef6 {part_number}\uff08\u6a21\u62df\u6570\u636e\uff09",
         )
-
-    @staticmethod
-    def _infer_category_from_specs(specs: Dict[str, str]) -> str:
-        """从规格字典推断零件分类 / Infer part category from specifications.
-
-        Args:
-            specs: 原始规格字典 / Raw specification dictionary.
-
-        Returns:
-            分类键值 / Category key.
-        """
-        text = " ".join(f"{k} {v}" for k, v in specs.items()).upper()
-        if any(kw in text for kw in ["DDR", "RDIMM", "LRDIMM", "MEMORY"]):
-            return "MEMORY"
-        if any(kw in text for kw in ["SSD", "SOLID STATE"]):
-            return "STORAGE_SSD"
-        if any(kw in text for kw in ["HDD", "HARD DRIVE", "SAS"]):
-            return "STORAGE_HDD"
-        if any(kw in text for kw in ["NVME", "NVMe"]):
-            return "STORAGE_NVME"
-        if any(kw in text for kw in ["POWER SUPPLY", "PSU", "WATT"]):
-            return "PSU"
-        if any(kw in text for kw in ["NIC", "ETHERNET", "NETWORK"]):
-            return "NIC"
-        if any(kw in text for kw in ["ROUTER", "SWITCH", "NETWORKING"]):
-            return "NIC"
-        if any(kw in text for kw in ["XEON", "EPYC", "PROCESSOR", "CPU"]):
-            return "CPU"
-        return "OTHERS"
