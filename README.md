@@ -313,4 +313,4 @@ MIT License — 自由使用、修改、分发。
 
 ---
 
-**Made by fredtai**
+**Made with [Kimi](https://kimi.moonshot.cn) Agent Cluster**
