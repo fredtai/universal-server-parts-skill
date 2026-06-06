@@ -365,7 +365,10 @@ class AntiCrawlFetcher(Fetcher):
         - 429 (Too Many Requests): 长延迟后重试 + 切换指纹
         - 403 (Forbidden): 切换指纹后重试
         - 5xx: 短延迟后重试
-        - 200: 成功返回
+        - 200: 成功返回（自动处理 gzip/deflate 解压）
+
+        自动处理 gzip/deflate 压缩，无需额外配置。
+        Auto-handles gzip/deflate compression.
         """
         last_error: Optional[Exception] = None
 
@@ -377,7 +380,7 @@ class AntiCrawlFetcher(Fetcher):
                 # 检查 HTTP 状态码
                 status = response.getcode()
                 if status == 200:
-                    body = response.read().decode("utf-8", errors="replace")
+                    body = self._decode_response(response)
                     response.close()
                     return body
 
@@ -445,6 +448,45 @@ class AntiCrawlFetcher(Fetcher):
         raise FetchError(
             f"All retries exhausted for {url}: {last_error}"
         )
+
+    def _decode_response(self, response) -> str:
+        """
+        解码 HTTP 响应，自动处理 gzip/deflate 压缩。
+        Decode HTTP response, auto-handle gzip/deflate compression.
+
+        Args:
+            response: urllib response object
+
+        Returns:
+            解码后的 UTF-8 文本 / Decoded UTF-8 text
+        """
+        import gzip
+        import zlib
+
+        raw = response.read()
+        content_encoding = response.headers.get("Content-Encoding", "").lower()
+
+        if "gzip" in content_encoding:
+            try:
+                raw = gzip.decompress(raw)
+            except Exception:
+                pass  # 如果不是 gzip 则使用原始数据
+        elif "deflate" in content_encoding:
+            try:
+                raw = zlib.decompress(raw, -zlib.MAX_WBITS)
+            except Exception:
+                try:
+                    raw = zlib.decompress(raw)
+                except Exception:
+                    pass
+
+        charset = "utf-8"
+        content_type = response.headers.get("Content-Type", "")
+        match = re.search(r"charset=([\w-]+)", content_type, re.I)
+        if match:
+            charset = match.group(1).lower()
+
+        return raw.decode(charset, errors="replace")
 
     # ── 带 Referer 的请求 / Request with Referer ───────────────────
 
