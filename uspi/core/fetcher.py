@@ -382,6 +382,9 @@ class Fetcher:
     ) -> str:
         """执行单个 HTTP 请求 / Execute a single HTTP request.
 
+        自动处理 gzip/deflate 压缩解压。
+        Auto-handles gzip/deflate decompression.
+
         Args:
             request: urllib Request 对象 / urllib Request object
             timeout: 超时秒数 / Timeout in seconds
@@ -397,8 +400,7 @@ class Fetcher:
         """
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                charset = self._detect_charset(response)
-                body = response.read().decode(charset, errors="replace")
+                body = self._decode_response_body(response)
                 return body
         except urllib.error.HTTPError as exc:
             status = exc.code
@@ -421,6 +423,40 @@ class Fetcher:
         except urllib.error.URLError:
             # 向上传递，由重试逻辑处理 / Propagate for retry logic
             raise
+
+    def _decode_response_body(self, response) -> str:
+        """
+        解码 HTTP 响应体，自动处理 gzip/deflate。
+        Decode HTTP response body, auto-handle gzip/deflate.
+
+        Args:
+            response: urllib response object.
+
+        Returns:
+            解码后的字符串 / Decoded string.
+        """
+        import gzip
+        import zlib
+
+        raw = response.read()
+        ce = response.headers.get("Content-Encoding", "").lower()
+
+        if "gzip" in ce:
+            try:
+                raw = gzip.decompress(raw)
+            except Exception:
+                pass  # Not actually gzip
+        elif "deflate" in ce:
+            try:
+                raw = zlib.decompress(raw, -zlib.MAX_WBITS)
+            except Exception:
+                try:
+                    raw = zlib.decompress(raw)
+                except Exception:
+                    pass
+
+        charset = self._detect_charset(response)
+        return raw.decode(charset, errors="replace")
 
     # -- helpers ------------------------------------------------------------
 
