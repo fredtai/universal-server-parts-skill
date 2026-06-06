@@ -15,6 +15,9 @@ from uspi.core.adapters.hp_adapter import HpAdapter
 from uspi.core.adapters.lenovo_adapter import LenovoAdapter
 from uspi.core.adapters.supermicro_adapter import SupermicroAdapter
 
+# 内存原厂适配器 / Memory manufacturer adapters
+from uspi.core.adapters.samsung_adapter import SamsungAdapter
+
 # ODM 适配器 / ODM adapters
 from uspi.core.adapters.foxconn_adapter import FoxconnAdapter
 from uspi.core.adapters.quanta_adapter import QuantaAdapter
@@ -50,6 +53,8 @@ __all__ = [
     "InventecAdapter",
     "FlexAdapter",
     "JabilAdapter",
+    # 内存原厂适配器 / Memory manufacturer adapters
+    "SamsungAdapter",
     # 公开市场适配器 / Market adapters
     "EbayPublicAdapter",
     "AmazonPublicAdapter",
@@ -75,6 +80,8 @@ ADAPTER_REGISTRY: dict[str, type[BaseAdapter]] = {
     "inventec": InventecAdapter,
     "flex": FlexAdapter,
     "jabil": JabilAdapter,
+    # 内存原厂 / Memory manufacturer
+    "samsung": SamsungAdapter,
     # Market
     "ebay": EbayPublicAdapter,
     "amazon": AmazonPublicAdapter,
