@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import sys
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 # -- 工具定义 / Tool definitions (<200 char descriptions) -------------------
@@ -79,7 +80,7 @@ try:
 except ImportError:
     Comparator = None  # type: ignore[misc,assignment]
 try:
-    from uspi.core.fetcher import Fetcher
+    from uspi.core.anti_crawl_fetcher import AntiCrawlFetcher as Fetcher
 except ImportError:
     Fetcher = None  # type: ignore[misc,assignment]
 try:
@@ -231,7 +232,7 @@ class McpServer:
         """零件查询。/ Part lookup.
 
         1. OCR 清洗 / OCR clean
-        2. 遍历适配器查询 / Query adapters
+        2. 并行查询所有适配器 / Query adapters in parallel (ThreadPoolExecutor)
         3. 聚合导出 / Aggregate and export
         """
         pn = args.get("part_number", "")
@@ -245,24 +246,56 @@ class McpServer:
             return "[Error / 错误] part_number required / 必须提供零件号"
         # OCR 清洗 / OCR cleaning
         cleaned = self._clean_pn(pn)
-        # 查询适配器 / Query adapters
+        # 并行查询适配器 / Parallel adapter queries
         parts: List[Any] = []
-        for name, adapter in adapters.items():
-            if mfrs and name not in mfrs:
-                continue
-            if not include_odm and name not in ("dell", "hp", "lenovo", "supermicro"):
-                continue
-            try:
-                r = adapter.lookup(cleaned) if hasattr(adapter, "lookup") else None
-                if r is not None:
-                    if max_src > 0 and hasattr(r, "sources") and r.sources:
-                        r.sources = r.sources[:max_src]
-                    parts.append(r)
-            except Exception:
-                continue
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            # 提交所有适配器查询任务 / Submit all adapter lookup tasks
+            futures = {}
+            for name, adapter in adapters.items():
+                if mfrs and name not in mfrs:
+                    continue
+                if not include_odm and name not in ("dell", "hp", "lenovo", "supermicro"):
+                    continue
+                future = executor.submit(self._safe_lookup, adapter, cleaned)
+                futures[future] = (name, adapter, max_src)
+
+            # 收集结果（谁先完成先处理）/ Collect results as they complete
+            for future in as_completed(futures, timeout=45):
+                try:
+                    r = future.result(timeout=10)
+                    if r is not None:
+                        name, adapter, max_src_val = futures[future]
+                        if max_src_val > 0 and hasattr(r, "sources") and r.sources:
+                            r.sources = r.sources[:max_src_val]
+                        parts.append(r)
+                except Exception:
+                    pass  # 单个适配器失败不影响其他 / Single adapter failure不影响others
+
         if not parts:
             return f"[Not Found / 未找到] {cleaned}\n请检查零件号 / Please verify part number."
         return self._export(parts, fmt, fields, lang)
+
+    @staticmethod
+    def _safe_lookup(adapter: Any, part_number: str) -> Optional[Any]:
+        """带异常保护的适配器查询 / Adapter lookup with exception guard.
+
+        在独立线程中执行单个适配器的 lookup，捕获所有异常避免影响其他适配器。
+        Executes a single adapter lookup in an isolated thread, catching all
+        exceptions to prevent interference with other adapters.
+
+        Args:
+            adapter: 适配器实例 / Adapter instance.
+            part_number: 清洗后的零件号 / Cleaned part number.
+
+        Returns:
+            ServerPart 实例或 None / ServerPart instance or None.
+        """
+        try:
+            if not getattr(adapter, "enabled", True):
+                return None
+            return adapter.lookup(part_number) if hasattr(adapter, "lookup") else None
+        except Exception:
+            return None
 
     def _do_compare(self, args: dict, adapters: Dict[str, Any]) -> str:
         """零件对比。/ Part comparison."""
@@ -409,9 +442,26 @@ class McpServer:
     # -- JSON-RPC 响应构造 / Response builders -----------------------------
 
     def _write(self, resp: dict) -> None:
-        """写入 stdout。/ Write to stdout."""
+        """写入响应到 stdout / Write response to stdout.
+
+        Windows 编码兼容 / Windows encoding compatibility:
+        在 Windows 上强制使用 UTF-8 编码输出，避免 gbk 编码错误。
+        Forces UTF-8 encoding on Windows to prevent gbk codec errors.
+        """
         try:
-            sys.stdout.write(json.dumps(resp, ensure_ascii=False, separators=(",", ":")) + "\n")
+            line = json.dumps(resp, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+            # Windows 编码兼容 / Windows encoding compatibility
+            # 检测并修复 stdout 编码 / Detect and fix stdout encoding
+            if sys.platform == "win32":
+                import io
+                # 若 stdout 不是 UTF-8，重新包装 / Re-wrap if not UTF-8
+                if sys.stdout.encoding != "utf-8":
+                    sys.stdout = io.TextIOWrapper(
+                        sys.stdout.buffer, encoding="utf-8", errors="replace"
+                    )
+
+            sys.stdout.write(line)
             sys.stdout.flush()
         except Exception:
             pass
