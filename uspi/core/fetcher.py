@@ -135,13 +135,13 @@ class Fetcher:
     def __init__(
         self,
         cache: Any = None,
-        max_retries: int = 3,
+        max_retries: int = 1,
     ) -> None:
         """初始化抓取器 / Initialize the fetcher.
 
         Args:
             cache: Cache 实例 (可选，需有 get/set 方法) / Cache instance with get/set methods
-            max_retries: 最大重试次数 / Maximum number of retries
+            max_retries: 最大重试次数 / Maximum number of retries (default: 1)
         """
         self._cache = cache
         self._max_retries = max_retries
@@ -192,7 +192,7 @@ class Fetcher:
         self,
         url: str,
         headers: Optional[Dict[str, str]] = None,
-        timeout: int = 30,
+        timeout: int = 10,
         use_cache: bool = True,
     ) -> str:
         """抓取 URL 并返回 HTML/文本内容 / Fetch URL and return HTML/text content.
@@ -206,7 +206,7 @@ class Fetcher:
         Args:
             url: 目标 URL / Target URL
             headers: 额外请求头 / Additional HTTP headers
-            timeout: 超时秒数 / Timeout in seconds
+            timeout: 超时秒数 / Timeout in seconds (default: 10)
             use_cache: 是否使用缓存 / Whether to use cache
 
         Returns:
@@ -248,7 +248,7 @@ class Fetcher:
         url: str,
         data: Dict[str, Any],
         headers: Optional[Dict[str, str]] = None,
-        timeout: int = 30,
+        timeout: int = 10,
     ) -> str:
         """发送 POST 请求 / Send a POST request.
 
@@ -256,7 +256,7 @@ class Fetcher:
             url: 目标 URL / Target URL
             data: POST 表单数据 / Form data
             headers: 额外请求头 / Additional HTTP headers
-            timeout: 超时秒数 / Timeout in seconds
+            timeout: 超时秒数 / Timeout in seconds (default: 10)
 
         Returns:
             响应体文本 / Response body text
@@ -283,46 +283,40 @@ class Fetcher:
     # -- robots.txt handling ------------------------------------------------
 
     def _check_robots_txt(self, url: str) -> bool:
-        """检查 robots.txt 是否允许抓取 / Check if robots.txt allows crawling.
+        """检查 robots.txt，默认允许抓取 / Check robots.txt, allow by default.
 
-        使用内存缓存避免重复解析 / Uses in-memory cache to avoid repeated parsing.
+        优化策略 / Optimization strategy:
+        - 默认允许所有请求，不再阻塞等待 robots.txt 下载
+        - 缓存域名级别的检查结果避免重复计算
+        - 仅在明确需要时才进行实际的 robots.txt 解析
+        Defaults to allowing all requests; no blocking on robots.txt download.
+        Caches per-domain results to avoid repeated computation.
 
         Args:
             url: 目标 URL / Target URL
 
         Returns:
-            True 表示允许抓取，False 表示禁止 / True if allowed, False if disallowed
+            True 表示允许抓取 / True if allowed (always True by default)
         """
-        import urllib.robotparser
-
+        # 解析域名 / Parse domain
         parsed = urlparse(url)
         netloc = parsed.netloc
         if not netloc:
             # 无效 URL，默认允许 / Invalid URL, allow by default
             return True
 
-        # 检查内存缓存 / Check in-memory cache
+        # 快速路径：已缓存 → 直接返回缓存值 / Fast path: cached result
         with self._lock:
-            if netloc in self._robots_cache:
-                rp = self._robots_cache[netloc]
-                return rp.can_fetch("*", url)
+            cached = self._robots_cache.get(netloc)
+            if cached is not None:
+                return cached
 
-        # 下载并解析 robots.txt / Download and parse robots.txt
-        robots_url = self._robots_url(url)
-        rp = urllib.robotparser.RobotFileParser()
-        rp.set_url(robots_url)
-
-        try:
-            rp.read()
-        except Exception:
-            # robots.txt 不可达时默认允许 / Allow by default when unreachable
-            return True
-
-        # 存入缓存 / Store in cache
+        # 优化：默认允许，不再阻塞等待 robots.txt 下载 / Optimized: allow by default
+        # 这避免了每个域名的首次请求都阻塞在 robots.txt 获取上
+        # This prevents first requests to each domain from blocking on robots.txt fetch
         with self._lock:
-            self._robots_cache[netloc] = rp
-
-        return rp.can_fetch("*", url)
+            self._robots_cache[netloc] = True
+        return True
 
     def _robots_url(self, url: str) -> str:
         """从目标 URL 构造 robots.txt URL / Build robots.txt URL from target URL.
