@@ -314,6 +314,59 @@ def infer_category_from_specs(specs: Dict[str, str]) -> str:
     return "OTHERS"
 
 
+# ── 零件号厂商匹配检查 ───────────────────────────────────
+_PN_OEM_PATTERNS: Dict[str, Any] = {
+    # Dell: 5-20位字母数字 或 CN-0 前缀 / Dell: 5-20 alphanumeric or CN-0 prefix
+    "DELL": re.compile(r"^[0-9A-Z]{5,20}$|^CN-0[0-9A-Z]+$"),
+    # HP/HPE: 6位字母数字 + - + 2-3位字母数字 / HP/HPE: 6 alphanum + dash + 2-3 alphanum
+    "HP": re.compile(r"^[0-9A-Z]{6}-[0-9A-Z]{2,3}$"),
+    "HPE": re.compile(r"^[0-9A-Z]{6}-[0-9A-Z]{2,3}$"),
+    # Lenovo: 2位数字+6位字母数字 或 7-10位字母数字 / Lenovo: 2 digits + 6 alphanum or 7-10 alphanum
+    "LENOVO": re.compile(r"^\d{2}[A-Z0-9]{6}$|^[A-Z0-9]{7,10}$"),
+    # Supermicro: SNK-P 前缀或 6-15位字母数字 / Supermicro: SNK-P prefix or 6-15 alphanum
+    "SUPERMICRO": re.compile(r"^SNK-P[A-Z0-9-]+$|^[A-Z0-9]{6,15}$"),
+}
+
+# Samsung 原厂号特征：M 开头 + 2位数字 / Samsung native PN: M prefix + 2 digits
+_SAMSUNG_MEMORY_PATTERN = re.compile(r"^M\d{2}[A-Z0-9]{5,20}$")
+
+
+def should_mock_for_manufacturer(part_number: str, manufacturer: str) -> bool:
+    """根据零件号特征判断是否适合该厂商 / Check if PN matches manufacturer.
+
+    不匹配则直接返回 mock，避免无效 HTTP 请求。
+    Returns True if the part number does NOT match the manufacturer's
+    expected format, suggesting we should skip the HTTP request and
+    return mock data directly.
+
+    Args:
+        part_number: 零件号 / Part number string.
+        manufacturer: 厂商名称 / Manufacturer name (e.g., "DELL", "HP").
+
+    Returns:
+        True 表示应直接返回 mock / True if should return mock directly.
+    """
+    if not part_number or not manufacturer:
+        return False
+
+    pn = part_number.upper().strip()
+    mfr = manufacturer.upper().strip()
+
+    # Samsung 原厂号 → 不匹配 OEM / Samsung native PN → not OEM compatible
+    # 例如 Samsung M393A8G40AB2-CWE 是原厂内存号 / e.g., Samsung M393A8G40AB2-CWE is native memory PN
+    if _SAMSUNG_MEMORY_PATTERN.match(pn):
+        if mfr in ("DELL", "HP", "HPE", "LENOVO", "SUPERMICRO"):
+            return True
+
+    # 检查厂商专用格式 / Check manufacturer-specific format
+    pattern = _PN_OEM_PATTERNS.get(mfr)
+    if pattern is not None:
+        if not pattern.match(pn):
+            return True  # 格式不匹配 → 直接 mock / Format mismatch → mock directly
+
+    return False  # 可能匹配 → 允许 HTTP 请求 / Potentially matching → allow HTTP request
+
+
 # ── Mock 数据生成公共函数 ───────────────────────────────────
 def make_mock_part(
     part_number: str,
