@@ -1,12 +1,18 @@
 """
-HTTP REST API Server / HTTP REST API 服务器
-基于 http.server.ThreadingHTTPServer
+USPI HTTP REST API Server — 通用 Agent 调用接口
+Universal Agent-Callable HTTP API
+
+任何 Agent（Kimi、Claude、GPT、自研 Agent）均可通过 HTTP 调用。
+Any agent can call via HTTP POST/GET.
+
+启动 / Start:  python -m uspi.api.http_server [port]
+默认端口 / Default: 8787
 
 端点 / Endpoints:
-- POST /lookup  -> Part lookup / 零件查询
-- POST /compare -> Part comparison / 零件对比
-- GET  /health  -> Health check / 健康检查
-默认端口 / Default port: 8787
+  POST /lookup  — 零件查询（支持 OCR、批量、并行）
+  POST /compare — 零件对比
+  POST /batch   — 批量查询（多个零件号一次性返回）
+  GET  /health  — 健康检查 + 可用适配器列表
 """
 
 from __future__ import annotations
@@ -14,12 +20,12 @@ from __future__ import annotations
 import json
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
-# -- 核心模块导入（优雅降级）/ Core imports (graceful fallback) --------------
-
+# -- 核心导入（优雅降级）/ Core imports ----------------------------
 try:
     from uspi.core.ocr_input import OcrInputCleaner
 except ImportError:
@@ -37,32 +43,34 @@ try:
 except ImportError:
     Comparator = None  # type: ignore[misc,assignment]
 try:
-    from uspi.core.fetcher import Fetcher
+    from uspi.core.anti_crawl_fetcher import AntiCrawlFetcher as FetcherCls
 except ImportError:
-    Fetcher = None  # type: ignore[misc,assignment]
+    try:
+        from uspi.core.fetcher import Fetcher as FetcherCls  # type: ignore[assignment]
+    except ImportError:
+        FetcherCls = None  # type: ignore[misc,assignment]
 try:
     from uspi.utils.currency import CurrencyConverter
 except ImportError:
     CurrencyConverter = None  # type: ignore[misc,assignment]
 
-# -- 线程安全全局状态 / Thread-safe global state ----------------------------
-
+# -- 线程安全全局状态 / Thread-safe state --------------------------
 _lock = threading.Lock()
 _adapters: Dict[str, Any] = {}
 _adapters_ready = False
 
 
 def _get_adapters() -> Dict[str, Any]:
-    """延迟初始化适配器 / Lazy-init adapters (thread-safe)."""
+    """延迟初始化适配器（线程安全）/ Lazy-init adapters."""
     global _adapters_ready
     with _lock:
         if _adapters_ready:
             return _adapters
         fetcher = None
         currency = None
-        if Fetcher is not None:
+        if FetcherCls is not None:
             try:
-                fetcher = Fetcher()
+                fetcher = FetcherCls()
             except Exception:
                 pass
         if CurrencyConverter is not None:
@@ -80,7 +88,7 @@ def _get_adapters() -> Dict[str, Any]:
 
 
 def _clean_pn(pn: str) -> str:
-    """清洗零件号（支持 OCR）/ Clean part number (OCR supported)."""
+    """清洗零件号（支持 OCR）/ Clean part number."""
     if not pn or OcrInputCleaner is None:
         return pn
     try:
@@ -92,36 +100,58 @@ def _clean_pn(pn: str) -> str:
 
 
 class UspiHandler(BaseHTTPRequestHandler):
-    """HTTP 请求处理器 / HTTP request handler."""
+    """HTTP 请求处理器 — CORS 支持 / CORS-enabled HTTP handler."""
+
+    # CORS 头 / CORS headers（允许浏览器前端直接调用）
+    _CORS_HEADERS = [
+        ("Access-Control-Allow-Origin", "*"),
+        ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
+        ("Access-Control-Allow-Headers", "Content-Type, Authorization"),
+        ("Access-Control-Max-Age", "86400"),
+    ]
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        """处理 CORS 预检 / Handle CORS preflight."""
+        self.send_response(204)
+        for k, v in self._CORS_HEADERS:
+            self.send_header(k, v)
+        self.end_headers()
 
     def do_POST(self) -> None:  # noqa: N802
-        """处理 POST / Handle POST."""
         path = urlparse(self.path).path.rstrip("/") or "/"
         body = self._read_body()
         if body is None:
-            self._send_json({"error": "Invalid JSON / 无效 JSON", "code": 400}, 400)
+            self._send_json({"error": "Invalid JSON", "code": 400}, 400)
             return
         try:
             if path == "/lookup":
                 self._send_json(self._handle_lookup(body))
             elif path == "/compare":
                 self._send_json(self._handle_compare(body))
+            elif path == "/batch":
+                self._send_json(self._handle_batch(body))
             else:
-                self._send_json({"error": f"Not found / 未找到: {path}", "code": 404}, 404)
+                self._send_json({"error": f"Not found: {path}", "code": 404}, 404)
         except Exception as e:
-            self._send_json({"error": f"Handler error / 处理错误: {e}", "code": 500}, 500)
+            self._send_json({"error": str(e), "code": 500}, 500)
 
     def do_GET(self) -> None:  # noqa: N802
-        """处理 GET / Handle GET."""
         path = urlparse(self.path).path.rstrip("/") or "/"
         if path == "/health":
             adapters = _get_adapters()
-            self._send_json({"status": "ok", "version": "0.1.0", "unit_system": "SI", "adapters": len(adapters)})
+            self._send_json({
+                "status": "ok",
+                "version": "0.1.0",
+                "unit_system": "SI",
+                "currency": "USD",
+                "adapters_count": len(adapters),
+                "adapters": sorted(adapters.keys()),
+                "endpoints": ["POST /lookup", "POST /compare", "POST /batch", "GET /health"],
+            })
         else:
-            self._send_json({"error": f"Not found / 未找到: {path}", "code": 404}, 404)
+            self._send_json({"error": f"Not found: {path}", "code": 404}, 404)
 
     def _read_body(self) -> Optional[Dict[str, Any]]:
-        """读取请求体 / Read request body."""
         try:
             n = int(self.headers.get("Content-Length", 0))
             if n <= 0:
@@ -130,132 +160,186 @@ class UspiHandler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
             return None
 
+    # ── /lookup ──────────────────────────────────────────────────
     def _handle_lookup(self, body: Dict[str, Any]) -> Dict[str, Any]:
-        """零件查询 / Part lookup."""
+        """单个零件查询 — 并行所有适配器。"""
         pn = body.get("part_number", "")
-        fmt = body.get("format", "compact")
-        lang = body.get("lang", "zh")
-        fields = body.get("fields", None)
-        max_src = body.get("max_sources", 3)
         if not pn:
-            return {"error": "part_number required / 必须提供零件号", "code": 400}
-        adapters = _get_adapters()
-        cleaned = _clean_pn(pn)
-        parts: List[Any] = []
-        for adapter in adapters.values():
-            try:
-                r = adapter.lookup(cleaned) if hasattr(adapter, "lookup") else None
-                if r is not None:
-                    if max_src > 0 and hasattr(r, "sources") and r.sources:
-                        r.sources = r.sources[:max_src]
-                    parts.append(r)
-            except Exception:
-                continue
-        if not parts:
-            return {"part_number": cleaned, "found": False, "message": "No results / 未找到结果"}
-        return {"part_number": cleaned, "found": True, "count": len(parts),
-                "results": self._fmt_parts(parts, fmt, fields, lang)}
+            return {"error": "part_number required", "code": 400}
 
+        cleaned = _clean_pn(pn)
+        adapters = _get_adapters()
+        max_workers = body.get("max_workers", 5)
+        timeout = body.get("timeout", 12)
+
+        # 并行查询所有适配器
+        parts = self._parallel_lookup(cleaned, adapters, max_workers, timeout)
+
+        # 截断来源
+        max_src = body.get("max_sources", 3)
+        for p in parts:
+            if hasattr(p, "sources") and p.sources:
+                p.sources = p.sources[:max_src]
+
+        if not parts:
+            return {"part_number": cleaned, "found": False}
+
+        return {
+            "part_number": cleaned,
+            "found": True,
+            "count": len(parts),
+            "results": self._to_dicts(parts, body.get("fields")),
+        }
+
+    # ── /compare ─────────────────────────────────────────────────
     def _handle_compare(self, body: Dict[str, Any]) -> Dict[str, Any]:
-        """零件对比 / Part comparison."""
+        """零件对比 — 查第一个成功即停。"""
         pns = body.get("part_numbers", [])
-        fmt = body.get("format", "md")
-        lang = body.get("lang", "zh")
         if len(pns) < 2:
-            return {"error": "Need >=2 part numbers / 至少需 2 个零件号", "code": 400}
+            return {"error": "Need >=2 part numbers", "code": 400}
+
         adapters = _get_adapters()
         found: List[Any] = []
         not_found: List[str] = []
+
         for pn in pns:
             pn = pn.strip()
             if not pn:
                 continue
-            r = None
-            for a in adapters.values():
-                try:
-                    r = a.lookup(_clean_pn(pn)) if hasattr(a, "lookup") else None
-                    if r:
-                        break
-                except Exception:
-                    continue
+            r = self._first_hit(_clean_pn(pn), adapters)
             if r:
                 found.append(r)
             else:
                 not_found.append(pn)
-        if len(found) < 2:
-            return {"error": f"Only found {len(found)} part(s) / 仅找到 {len(found)} 个", "not_found": not_found, "code": 404}
-        if Comparator is not None:
-            try:
-                comp = Comparator()
-                cmp = comp.compare(found)
-                if fmt == "md":
-                    return {"format": "md", "table": comp.to_markdown_matrix(cmp, lang=lang),
-                            "found": len(found), "not_found": not_found}
-                return {"format": fmt, "comparison": cmp, "found": len(found), "not_found": not_found}
-            except Exception:
-                pass
-        return {"format": fmt, "parts": self._fmt_parts(found, fmt, None, lang), "not_found": not_found}
 
-    def _fmt_parts(self, parts: List[Any], fmt: str, fields: Optional[List[str]], lang: str) -> Any:
-        """格式化零件列表 / Format parts list."""
-        if Exporter is not None:
-            try:
-                exp = Exporter()
-                if fmt == "compact":
-                    return {"text": exp.to_compact_text(parts, lang=lang)}
-                elif fmt == "md":
-                    return {"markdown": exp.to_markdown(parts, lang=lang, fields=fields)}
-                elif fmt == "csv":
-                    return {"csv": exp.to_csv(parts, lang=lang)}
-                elif fmt == "json":
-                    return {"json": exp.to_json(parts, fields=fields)}
-            except Exception:
-                pass
-        # 内建降级 / Built-in fallback
-        return [self._part_dict(p, fields) for p in parts]
+        return {
+            "found_count": len(found),
+            "not_found": not_found,
+            "parts": self._to_dicts(found, body.get("fields")),
+        }
+
+    # ── /batch ───────────────────────────────────────────────────
+    def _handle_batch(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        """批量查询 — 多个零件号一次性并行返回。"""
+        pns = body.get("part_numbers", [])
+        if not pns:
+            return {"error": "part_numbers required", "code": 400}
+
+        adapters = _get_adapters()
+        max_workers = body.get("max_workers", 5)
+        per_pn_timeout = body.get("timeout", 10)
+        results: List[Dict[str, Any]] = []
+
+        for pn in pns:
+            cleaned = _clean_pn(pn)
+            parts = self._parallel_lookup(cleaned, adapters, max_workers, per_pn_timeout)
+            results.append({
+                "part_number": cleaned,
+                "found": len(parts) > 0,
+                "count": len(parts),
+                "results": self._to_dicts(parts, body.get("fields")),
+            })
+
+        return {"batch_size": len(pns), "results": results}
+
+    # ── 并行查询 / Parallel lookup ───────────────────────────────
+    @staticmethod
+    def _parallel_lookup(pn: str, adapters: Dict[str, Any], max_workers: int, timeout: int) -> List[Any]:
+        """使用 ThreadPoolExecutor 并行查询所有适配器。"""
+        parts: List[Any] = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(UspiHandler._safe_lookup, adapter, pn, timeout): name
+                for name, adapter in adapters.items()
+            }
+            for future in as_completed(futures, timeout=timeout + 5):
+                try:
+                    result = future.result(timeout=timeout)
+                    if result is not None:
+                        parts.append(result)
+                except Exception:
+                    pass
+        return parts
 
     @staticmethod
-    def _part_dict(part: Any, fields: Optional[List[str]] = None) -> Dict[str, Any]:
-        """零件转字典 / Part to dict."""
-        attrs = ["part_number", "manufacturer", "manufacturer_zh", "category", "category_zh",
-                 "description_zh", "median_price_usd", "price_range_usd", "confidence_score", "unit_system"]
-        d = {a: getattr(part, a, None) for a in attrs}
-        d = {k: v for k, v in d.items() if v is not None}
-        if hasattr(part, "sources") and part.sources:
-            d["sources"] = [{"name": getattr(s, "source_name", ""), "price_usd": getattr(s, "price_usd", None),
-                             "in_stock": getattr(s, "in_stock", None)} for s in part.sources]
-        if fields:
-            d = {k: v for k, v in d.items() if k in fields}
-        return d
+    def _safe_lookup(adapter: Any, pn: str, timeout: int) -> Any:
+        """带异常保护的适配器查询。"""
+        try:
+            if not getattr(adapter, "enabled", True):
+                return None
+            return adapter.lookup(pn)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _first_hit(pn: str, adapters: Dict[str, Any]) -> Any:
+        """串行查询，第一个成功即返回。"""
+        for adapter in adapters.values():
+            try:
+                r = adapter.lookup(pn) if hasattr(adapter, "lookup") else None
+                if r is not None:
+                    return r
+            except Exception:
+                continue
+        return None
+
+    # ── 格式化 / Formatting ──────────────────────────────────────
+    @staticmethod
+    def _to_dicts(parts: List[Any], fields: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """零件列表转字典（简洁格式，省 Token）。"""
+        attrs = ["part_number", "manufacturer", "manufacturer_zh",
+                 "category", "category_zh", "description_zh",
+                 "median_price_usd", "confidence_score"]
+        result = []
+        for part in parts:
+            d: Dict[str, Any] = {}
+            for a in attrs:
+                v = getattr(part, a, None)
+                if v is not None:
+                    d[a] = v
+            # 来源摘要
+            if hasattr(part, "sources") and part.sources:
+                d["prices"] = [
+                    {"src": getattr(s, "source_name", ""), "$": getattr(s, "price_usd", None)}
+                    for s in part.sources[:3]
+                ]
+            # 规格摘要
+            if hasattr(part, "specifications") and part.specifications:
+                specs = part.specifications
+                d["specs"] = {k: v for k, v in specs.items() if v is not None}
+            if fields:
+                d = {k: v for k, v in d.items() if k in fields}
+            result.append(d)
+        return result
 
     def _send_json(self, data: Dict[str, Any], status: int = 200) -> None:
-        """发送 JSON 响应 / Send JSON response."""
+        """发送 JSON 响应（紧凑格式 / compact separators）。"""
         body = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        for k, v in self._CORS_HEADERS:
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
-        """抑制日志 / Suppress logs."""
         pass
 
 
 def run_server(host: str = "0.0.0.0", port: int = 8787) -> None:
-    """启动服务器 / Start server."""
+    """启动 HTTP 服务器 / Start HTTP server."""
     server = ThreadingHTTPServer((host, port), UspiHandler)
-    print(f"USPI HTTP API on / 服务地址: http://{host}:{port}", file=sys.stderr)
-    print("Endpoints / 端点: POST /lookup, POST /compare, GET /health", file=sys.stderr)
+    print(f"USPI HTTP API: http://{host}:{port}", file=sys.stderr)
+    print("Endpoints: POST /lookup | POST /compare | POST /batch | GET /health", file=sys.stderr)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nShutdown / 关闭...", file=sys.stderr)
+        print("\nShutting down...", file=sys.stderr)
         server.shutdown()
 
 
 def main() -> None:
-    """入口 / Entry point."""
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8787
     run_server(port=port)
 
