@@ -1,63 +1,122 @@
 {
   "name": "universal-server-parts-skill",
   "version": "0.1.0",
-  "description": "Universal Server Parts Intelligence (USPI) - Query server part specs and USD pricing across OEM/ODM vendors with OCR input and Excel export support.",
-  "description_zh": "通用服务器零件智能查询系统（USPI）- 跨 OEM/ODM 厂商查询服务器零件规格与美元价格，支持 OCR 输入和 Excel 导出。",
+  "description": "Universal Server Parts Intelligence (USPI) — Query server part specs and USD pricing across 16 OEM/ODM vendors. Zero dependencies. HTTP API + Python module + CLI.",
+  "description_zh": "通用服务器零件智能查询（USPI）— 跨16个OEM/ODM厂商查询服务器零件规格与美元价格。零依赖。支持HTTP API、Python模块导入、命令行三种调用方式。",
   "author": "USPI Team",
   "license": "MIT",
   "python": ">=3.10",
   "dependencies": [],
   "entry_points": {
-    "mcp": "uspi.mcp.server:main",
-    "http": "uspi.api.http_server:main"
+    "http": "uspi.api.http_server:main",
+    "module": "uspi.core",
+    "cli": "uspi.cli:main"
   },
-  "mcp_tools": [
-    {
-      "name": "uspi_lookup",
-      "description": "Query server part specs and USD pricing across OEM/ODM vendors.",
-      "description_zh": "查询服务器零件规格与美元价格，支持OEM/ODM厂商。"
-    },
-    {
-      "name": "uspi_compare",
-      "description": "Compare multiple server parts side by side.",
-      "description_zh": "并排对比多个服务器零件。"
-    },
-    {
-      "name": "uspi_export",
-      "description": "Export part data to Excel-pasteable markdown or CSV.",
-      "description_zh": "导出零件数据为可粘贴Excel的Markdown或CSV。"
+  "api": {
+    "protocol": "http-rest",
+    "base_url": "http://localhost:8787",
+    "endpoints": {
+      "POST /lookup": {
+        "description": "Query a part number across all adapters",
+        "description_zh": "查询零件号，并行搜索所有适配器",
+        "params": {
+          "part_number": "string (required) — Part number, supports OCR dirty text",
+          "format": "string (optional) — Output format: compact | json | csv",
+          "fields": "array (optional) — Filter specific fields",
+          "max_sources": "integer (optional) — Max price sources per part, default 3",
+          "max_workers": "integer (optional) — Parallel workers, default 5",
+          "timeout": "integer (optional) — Timeout per adapter in seconds, default 12"
+        },
+        "example_request": {"part_number": "M393A8G40AB2-CWE", "format": "compact"},
+        "example_response": {
+          "part_number": "M393A8G40AB2-CWE",
+          "found": true,
+          "count": 3,
+          "results": [
+            {
+              "part_number": "M393A8G40AB2-CWE",
+              "manufacturer_zh": "三星",
+              "category_zh": "内存",
+              "median_price_usd": 150.0,
+              "confidence_score": 0.8,
+              "specs": {"capacity": 64, "type": "DDR4"},
+              "prices": [{"src": "Samsung_Mock", "$": 150.0}]
+            }
+          ]
+        }
+      },
+      "POST /compare": {
+        "description": "Compare multiple parts side by side",
+        "description_zh": "并排对比多个零件",
+        "params": {
+          "part_numbers": "array (required) — List of part numbers",
+          "fields": "array (optional) — Filter specific fields"
+        }
+      },
+      "POST /batch": {
+        "description": "Batch query multiple parts at once",
+        "description_zh": "批量查询多个零件",
+        "params": {
+          "part_numbers": "array (required) — List of part numbers",
+          "format": "string (optional) — compact | json",
+          "max_workers": "integer (optional) — default 5",
+          "timeout": "integer (optional) — default 10"
+        }
+      },
+      "GET /health": {
+        "description": "Health check and adapter list",
+        "description_zh": "健康检查及适配器列表"
+      }
     }
-  ],
+  },
+  "cli": {
+    "command": "python -m uspi.cli",
+    "subcommands": {
+      "lookup PART_NUMBER [--format compact|json|csv]": "Query a single part",
+      "compare PART_NUMBER1 PART_NUMBER2 ...": "Compare multiple parts",
+      "batch PN1 PN2 ... [--format compact|json]": "Batch query",
+      "health": "Show system status"
+    }
+  },
+  "python_api": {
+    "import_path": "uspi",
+    "key_classes": [
+      "uspi.core.parser.PartParser",
+      "uspi.core.adapters.ADAPTER_REGISTRY",
+      "uspi.core.anti_crawl_fetcher.AntiCrawlFetcher",
+      "uspi.core.unit_converter.UnitConverter",
+      "uspi.core.exporter.Exporter",
+      "uspi.api.http_server.run_server"
+    ]
+  },
   "features": [
     "zero_dependencies",
+    "http_rest_api",
+    "python_module",
+    "cli_tool",
+    "parallel_queries",
+    "cors_enabled",
     "usd_unified_pricing",
     "si_standard_units",
     "bilingual_en_zh",
     "ocr_input_support",
     "excel_compatible_export",
     "token_efficient_output",
-    "15_adapters"
+    "16_adapters",
+    "anti_crawl_protection"
   ],
-  "categories": [
-    "hardware",
-    "server",
-    "parts",
-    "pricing",
-    "oem",
-    "odm"
-  ],
-  "supported_oem": ["DELL", "HP", "HPE", "LENOVO", "SUPERMICRO"],
-  "supported_odm": ["FOXCONN", "QUANTA", "WISTRON", "COMPAL", "PEGATRON", "INVENTEC", "FLEX", "JABIL"],
-  "supported_market": ["eBay", "Amazon", "AliExpress"],
-  "output_formats": ["compact", "md", "csv", "json"],
-  "unit_dimensions": ["capacity", "frequency", "power", "dimension", "weight", "rpm", "voltage", "current", "temperature", "data_rate", "cache"],
+  "supported_vendors": {
+    "oem": ["DELL", "HP", "HPE", "LENOVO", "SUPERMICRO"],
+    "odm": ["FOXCONN", "QUANTA", "WISTRON", "COMPAL", "PEGATRON", "INVENTEC", "FLEX", "JABIL"],
+    "market": ["eBay", "Amazon", "AliExpress"],
+    "direct": ["Samsung"]
+  },
+  "output_formats": ["compact", "json", "csv", "md"],
   "repository": "https://github.com/fredtai/universal-server-parts-skill",
   "documentation": {
-    "readme_zh": "docs/README.zh.md",
-    "readme_en": "docs/README.en.md",
-    "api_spec_zh": "docs/API_SPEC.zh.md",
-    "api_spec_en": "docs/API_SPEC.en.md",
+    "readme": "README.md",
+    "api_spec": "docs/API_SPEC.md",
     "dialogue_examples": "docs/DIALOGUE_EXAMPLES.md",
-    "units": "docs/UNITS.md"
+    "test_report": "TEST_REPORT.md"
   }
 }
